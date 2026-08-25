@@ -260,7 +260,7 @@ if "is_finished" not in st.session_state: st.session_state.is_finished = False
 if "start_time" not in st.session_state: st.session_state.start_time = None
 if "end_time" not in st.session_state: st.session_state.end_time = None
 
-st.title("📘 NotebookLM Interactive Quiz Hub")
+st.title("📘 Prashant's Testbook")
 st.markdown("Transform long lectures & current affairs PDFs into structured flashcard decks.")
 
 # Sidebar Settings
