@@ -227,18 +227,46 @@ if "end_time" not in st.session_state: st.session_state.end_time = None
 st.title("📘 Prashant's TestBook")
 st.markdown("Transform long lectures & current affairs PDFs into structured flashcard decks.")
 
+# ------------------------------------------
+# CONFIGURATION SIDEBAR
+# ------------------------------------------
 st.sidebar.header("⚙️ Configuration")
-api_keys_input = st.sidebar.text_area(
-    "Gemini API Keys (One per line)", 
-    help="Paste multiple API keys here. The app will automatically switch keys if one hits a quota limit."
-)
-api_keys_list = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
+
+# API Key Source Toggle
+key_source = st.sidebar.radio("🔑 API Key Source", ["Use Saved Keys (Secrets)", "Enter Manually"])
+
+api_keys_list = []
+
+if key_source == "Enter Manually":
+    api_keys_input = st.sidebar.text_area(
+        "Paste Gemini API Keys (One per line)", 
+        help="Paste multiple API keys here. The app will automatically switch keys if one hits a quota limit."
+    )
+    api_keys_list = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
+else:
+    try:
+        # Attempt to load from Streamlit Cloud Secrets
+        saved_keys_raw = st.secrets["GEMINI_API_KEYS"]
+        # Handle formatting (if it's a comma-separated string)
+        if isinstance(saved_keys_raw, str):
+            api_keys_list = [k.strip() for k in saved_keys_raw.split(",") if k.strip()]
+        else:
+            api_keys_list = list(saved_keys_raw)
+            
+        if api_keys_list:
+            st.sidebar.success(f"✅ Securely loaded {len(api_keys_list)} API key(s) from Secrets.")
+        else:
+            st.sidebar.error("Saved keys list is empty.")
+    except Exception:
+        st.sidebar.warning("⚠️ No saved keys found. Please configure them in Streamlit App Settings -> Secrets, or select 'Enter Manually'.")
+
 
 num_questions = st.sidebar.number_input(
     "Number of Questions (1 - 1,500)", min_value=5, max_value=1500, value=20, step=5
 )
 
-source_type = st.radio("Select source material:", ["YouTube Video", "PDF Document"])
+st.sidebar.markdown("---")
+source_type = st.sidebar.radio("Select source material:", ["YouTube Video", "PDF Document"])
 content_text = ""
 video_id = None
 
@@ -251,9 +279,10 @@ if source_type == "YouTube Video":
 elif source_type == "PDF Document":
     uploaded_file = st.file_uploader("📄 Upload Current Affairs PDF", type=["pdf"])
 
+# Execution Action
 if st.button("🚀 Generate Quiz Deck", type="primary", use_container_width=True):
     if not api_keys_list:
-        st.warning("⚠️ Please enter at least one Gemini API Key in the sidebar.")
+        st.warning("⚠️ Please provide at least one Gemini API Key.")
         st.stop()
 
     with st.spinner("Extracting material text..."):
@@ -301,7 +330,6 @@ if st.session_state.quiz_data:
         with col_prog: 
             st.progress((curr_i + 1) / total_q)
         with col_timer:
-            # Inject Live JavaScript Timer
             start_ms = int(st.session_state.start_time * 1000)
             components.html(f"""
             <div style="font-family: 'Google Sans', sans-serif; font-size: 14px; font-weight: 600; color: #0b57d0; text-align: right;">
