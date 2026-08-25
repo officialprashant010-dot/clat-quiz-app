@@ -266,10 +266,9 @@ st.markdown("Transform long lectures & current affairs PDFs into structured flas
 # Sidebar Settings
 st.sidebar.header("⚙️ Configuration")
 
-# Bulk API Input
+# Bulk API Input (type="password" successfully removed)
 api_keys_input = st.sidebar.text_area(
     "Gemini API Keys (One per line)", 
-    type="password", 
     help="Paste multiple API keys here. The app will automatically switch keys if one hits a quota limit."
 )
 api_keys_list = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
@@ -414,7 +413,7 @@ if st.session_state.quiz_data:
 
         # Score Calculations
         correct_count = sum(1 for idx, q in enumerate(quiz_data) if st.session_state.user_answers.get(idx) == q["correct_answer"])
-        accuracy = (correct_count / total_q) * 100
+        accuracy = (correct_count / total_q) * 100 if total_q > 0 else 0
 
         # Timer Calculation
         time_str = "N/A"
