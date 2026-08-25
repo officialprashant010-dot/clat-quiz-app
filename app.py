@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from youtube_transcript_api import YouTubeTranscriptApi
 import PyPDF2
 from google import genai
@@ -14,14 +15,11 @@ import time
 def apply_notebooklm_css():
     st.markdown("""
     <style>
-    /* Google / NotebookLM Workspace Canvas */
     .stApp {
         background-color: #f0f4f9;
         font-family: 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         color: #1f1f1f;
     }
-    
-    /* NotebookLM Surface Card */
     div[data-testid="stVerticalBlockBorderWrapper"] {
         background-color: #ffffff;
         border: 1px solid #e1e3e1;
@@ -30,8 +28,6 @@ def apply_notebooklm_css():
         box-shadow: 0 1px 3px rgba(60, 64, 67, 0.08), 0 4px 8px rgba(60, 64, 67, 0.04);
         margin-bottom: 20px;
     }
-
-    /* NotebookLM Tag Pills */
     .category-badge {
         background-color: #e8f0fe;
         color: #0b57d0;
@@ -44,8 +40,6 @@ def apply_notebooklm_css():
         display: inline-block;
         margin-bottom: 14px;
     }
-    
-    /* Correct Answer Callout */
     .correct-box {
         background-color: #e6f4ea;
         border: 1px solid #ceead6;
@@ -57,8 +51,6 @@ def apply_notebooklm_css():
         font-weight: 500;
         font-size: 14px;
     }
-    
-    /* Incorrect Answer Callout */
     .incorrect-box {
         background-color: #fce8e6;
         border: 1px solid #fad2cf;
@@ -70,8 +62,6 @@ def apply_notebooklm_css():
         font-weight: 500;
         font-size: 14px;
     }
-
-    /* Explanation & Learning Takeaway Callout */
     .explanation-box {
         background-color: #f8f9fa;
         border: 1px solid #e8eaed;
@@ -83,8 +73,6 @@ def apply_notebooklm_css():
         color: #3c4043;
         line-height: 1.6;
     }
-
-    /* Streamlit Primary Button Overrides */
     div.stButton > button[kind="primary"] {
         border-radius: 24px;
         background-color: #0b57d0;
@@ -92,7 +80,6 @@ def apply_notebooklm_css():
         border: none;
         padding: 10px 24px;
     }
-
     div.stButton > button[kind="primary"]:hover {
         background-color: #0842a0;
     }
@@ -112,55 +99,38 @@ def get_youtube_transcript(video_id):
     try:
         api = YouTubeTranscriptApi()
         fetched = None
-        try:
-            fetched = api.fetch(video_id, languages=['hi', 'en', 'en-IN'])
-        except Exception:
-            pass
-        if not fetched:
+        for lang in [['hi', 'en', 'en-IN'], ['en']]:
             try:
-                fetched = api.fetch(video_id)
-            except Exception:
-                pass
+                fetched = api.fetch(video_id, languages=lang)
+                break
+            except: pass
+        
         if not fetched:
             try:
                 transcript_list = api.list(video_id)
                 for tr in transcript_list:
                     fetched = tr.fetch()
                     break
-            except Exception:
-                pass
-        if not fetched:
-            return "Error: Could not retrieve captions for this video."
+            except: pass
 
+        if not fetched: return "Error: Could not retrieve captions."
+        
         if hasattr(fetched, 'to_raw_data'):
-            raw_data = fetched.to_raw_data()
-            text = " ".join([item['text'] for item in raw_data if 'text' in item])
-        else:
-            text = " ".join([getattr(item, 'text', '') for item in fetched])
-        return text
+            return " ".join([item['text'] for item in fetched.to_raw_data() if 'text' in item])
+        return " ".join([getattr(item, 'text', '') for item in fetched])
     except Exception as e:
         return f"Error extracting transcript: {e}"
 
 def get_pdf_text(uploaded_file):
-    text = ""
     try:
         reader = PyPDF2.PdfReader(uploaded_file)
-        for page in reader.pages:
-            extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        return text
+        return "".join([page.extract_text() + "\n" for page in reader.pages if page.extract_text()])
     except Exception as e:
         return f"Error reading PDF: {e}"
 
 def generate_quiz_batched(content, total_requested, api_keys):
-    """
-    Handles large question requests with Auto API-Key Rotation.
-    If a quota/limit error is hit, it automatically switches to the next key.
-    """
     batch_size = 20
     total_batches = math.ceil(total_requested / batch_size)
-    
     all_questions = []
     text_length = len(content)
     
@@ -172,7 +142,6 @@ def generate_quiz_batched(content, total_requested, api_keys):
 
     for batch_idx in range(total_batches):
         current_batch_qty = min(batch_size, total_requested - len(all_questions))
-        
         start_char = int((batch_idx / total_batches) * text_length)
         end_char = int(((batch_idx + 1) / total_batches) * text_length)
         content_slice = content[start_char:min(end_char + 15000, text_length)]
@@ -207,7 +176,6 @@ def generate_quiz_batched(content, total_requested, api_keys):
         success = False
         attempts = 0
         
-        # API Rotation Retry Loop
         while not success and attempts < len(api_keys):
             try:
                 response = client.models.generate_content(
@@ -222,7 +190,6 @@ def generate_quiz_batched(content, total_requested, api_keys):
                 
             except Exception as e:
                 error_str = str(e).lower()
-                # If error is related to rate limits or quota, switch keys
                 if any(kw in error_str for kw in ["429", "quota", "exhausted", "limit", "too many"]):
                     attempts += 1
                     if attempts < len(api_keys):
@@ -236,13 +203,11 @@ def generate_quiz_batched(content, total_requested, api_keys):
                     st.error(f"Generation error on batch {batch_idx + 1}: {e}")
                     break
 
-        if not success:
-            break # Halt overall generation if a batch completely fails across all keys
+        if not success: break
 
     progress_bar.progress(1.0)
     status_text.empty()
     progress_bar.empty()
-
     return all_questions[:total_requested]
 
 # ==========================================
@@ -252,7 +217,6 @@ def generate_quiz_batched(content, total_requested, api_keys):
 st.set_page_config(page_title="NotebookLM Flashcard Hub", page_icon="📘", layout="wide")
 apply_notebooklm_css()
 
-# Session State Setup (Including Timer variables)
 if "quiz_data" not in st.session_state: st.session_state.quiz_data = None
 if "current_idx" not in st.session_state: st.session_state.current_idx = 0
 if "user_answers" not in st.session_state: st.session_state.user_answers = {}
@@ -260,13 +224,10 @@ if "is_finished" not in st.session_state: st.session_state.is_finished = False
 if "start_time" not in st.session_state: st.session_state.start_time = None
 if "end_time" not in st.session_state: st.session_state.end_time = None
 
-st.title("📘 Prashant's Testbook")
+st.title("📘 NotebookLM Interactive Quiz Hub")
 st.markdown("Transform long lectures & current affairs PDFs into structured flashcard decks.")
 
-# Sidebar Settings
 st.sidebar.header("⚙️ Configuration")
-
-# Bulk API Input (type="password" successfully removed)
 api_keys_input = st.sidebar.text_area(
     "Gemini API Keys (One per line)", 
     help="Paste multiple API keys here. The app will automatically switch keys if one hits a quota limit."
@@ -274,8 +235,7 @@ api_keys_input = st.sidebar.text_area(
 api_keys_list = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
 
 num_questions = st.sidebar.number_input(
-    "Number of Questions (1 - 1,500)", 
-    min_value=5, max_value=1500, value=20, step=5
+    "Number of Questions (1 - 1,500)", min_value=5, max_value=1500, value=20, step=5
 )
 
 source_type = st.radio("Select source material:", ["YouTube Video", "PDF Document"])
@@ -291,17 +251,14 @@ if source_type == "YouTube Video":
 elif source_type == "PDF Document":
     uploaded_file = st.file_uploader("📄 Upload Current Affairs PDF", type=["pdf"])
 
-# Execution Action
 if st.button("🚀 Generate Quiz Deck", type="primary", use_container_width=True):
     if not api_keys_list:
         st.warning("⚠️ Please enter at least one Gemini API Key in the sidebar.")
         st.stop()
 
     with st.spinner("Extracting material text..."):
-        if source_type == "YouTube Video" and yt_url and video_id:
-            content_text = get_youtube_transcript(video_id)
-        elif source_type == "PDF Document" and uploaded_file:
-            content_text = get_pdf_text(uploaded_file)
+        if source_type == "YouTube Video" and yt_url and video_id: content_text = get_youtube_transcript(video_id)
+        elif source_type == "PDF Document" and uploaded_file: content_text = get_pdf_text(uploaded_file)
         else:
             st.warning("Please provide a valid source file or URL.")
             st.stop()
@@ -317,12 +274,9 @@ if st.button("🚀 Generate Quiz Deck", type="primary", use_container_width=True
                 st.session_state.current_idx = 0
                 st.session_state.user_answers = {}
                 st.session_state.is_finished = False
-                
-                # Start the background timer the moment generation is finished
                 st.session_state.start_time = time.time() 
                 st.rerun()
-            else:
-                st.error("Failed to extract questions from content.")
+            else: st.error("Failed to extract questions from content.")
         except Exception as e:
             st.error(f"Error generating quiz: {e}")
 
@@ -334,18 +288,35 @@ if st.session_state.quiz_data:
     quiz_data = st.session_state.quiz_data
     total_q = len(quiz_data)
 
-    # ------------------------------------------
-    # VIEW 1: ONE-BY-ONE FLASHCARD CAROUSEL
-    # ------------------------------------------
     if not st.session_state.is_finished:
         curr_i = st.session_state.current_idx
         q = quiz_data[curr_i]
 
         st.markdown("---")
         
-        col_title, col_prog = st.columns([3, 1])
-        with col_title: st.caption(f"Flashcard {curr_i + 1} of {total_q}")
-        with col_prog: st.progress((curr_i + 1) / total_q)
+        # UI Header with Progress and LIVE TIMER
+        col_title, col_prog, col_timer = st.columns([2, 3, 1])
+        with col_title: 
+            st.caption(f"Flashcard {curr_i + 1} of {total_q}")
+        with col_prog: 
+            st.progress((curr_i + 1) / total_q)
+        with col_timer:
+            # Inject Live JavaScript Timer
+            start_ms = int(st.session_state.start_time * 1000)
+            components.html(f"""
+            <div style="font-family: 'Google Sans', sans-serif; font-size: 14px; font-weight: 600; color: #0b57d0; text-align: right;">
+                ⏱️ <span id="clock">0m 0s</span>
+            </div>
+            <script>
+                var start_time = {start_ms};
+                setInterval(function() {{
+                    var delta = Math.floor((Date.now() - start_time) / 1000);
+                    var m = Math.floor(delta / 60);
+                    var s = delta % 60;
+                    document.getElementById("clock").innerHTML = m + "m " + s + "s";
+                }}, 1000);
+            </script>
+            """, height=30)
 
         # Question Surface Card
         with st.container(border=True):
@@ -369,11 +340,9 @@ if st.session_state.quiz_data:
                 label_visibility="collapsed"
             )
 
-            # Instant Feedback Display
             if selected_option:
                 chosen_key = selected_option.split(")")[0].strip()
                 st.session_state.user_answers[curr_i] = chosen_key
-
                 correct_key = q["correct_answer"]
                 correct_text = options[correct_key]
 
@@ -391,7 +360,6 @@ if st.session_state.quiz_data:
                 if st.button("⬅️ Previous Card", use_container_width=True):
                     st.session_state.current_idx -= 1
                     st.rerun()
-
         with c_next:
             if curr_i < total_q - 1:
                 if st.button("Next Card ➡️", type="primary", use_container_width=True):
@@ -400,7 +368,6 @@ if st.session_state.quiz_data:
             else:
                 if st.button("📊 Finish & View Dashboard", type="primary", use_container_width=True):
                     st.session_state.is_finished = True
-                    # Stop the timer exactly when they finish
                     st.session_state.end_time = time.time()
                     st.rerun()
 
@@ -411,22 +378,19 @@ if st.session_state.quiz_data:
         st.markdown("---")
         st.subheader("📊 Performance & Study Summary")
 
-        # Score Calculations
         correct_count = sum(1 for idx, q in enumerate(quiz_data) if st.session_state.user_answers.get(idx) == q["correct_answer"])
         accuracy = (correct_count / total_q) * 100 if total_q > 0 else 0
 
-        # Timer Calculation
         time_str = "N/A"
         if st.session_state.start_time and st.session_state.end_time:
             time_taken = st.session_state.end_time - st.session_state.start_time
             mins, secs = divmod(int(time_taken), 60)
             time_str = f"{mins}m {secs}s"
 
-        # Metric Tiles (Now split into 4 columns)
         m1, m2, m3, m4 = st.columns(4)
         with m1: st.metric("Total Score", f"{correct_count} / {total_q}")
         with m2: st.metric("Accuracy", f"{accuracy:.1f}%")
-        with m3: st.metric("Time Taken", time_str)
+        with m3: st.metric("Total Time", time_str)
         with m4: 
             status = "Target Achieved 🎉" if accuracy >= 70 else "Needs Revision 📚"
             st.metric("Readiness Level", status)
