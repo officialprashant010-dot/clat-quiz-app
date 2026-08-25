@@ -5,6 +5,7 @@ from google import genai
 import re
 import json
 import math
+import time
 
 # ==========================================
 # NOTEBOOKLM DESIGN STYLING (CSS)
@@ -83,7 +84,7 @@ def apply_notebooklm_css():
         line-height: 1.6;
     }
 
-    /* Streamlit Primary Button Overrides to Match NotebookLM */
+    /* Streamlit Primary Button Overrides */
     div.stButton > button[kind="primary"] {
         border-radius: 24px;
         background-color: #0b57d0;
@@ -94,12 +95,6 @@ def apply_notebooklm_css():
 
     div.stButton > button[kind="primary"]:hover {
         background-color: #0842a0;
-    }
-
-    /* Header styling */
-    h1, h2, h3 {
-        color: #1f1f1f;
-        font-weight: 600;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -117,18 +112,15 @@ def get_youtube_transcript(video_id):
     try:
         api = YouTubeTranscriptApi()
         fetched = None
-
         try:
             fetched = api.fetch(video_id, languages=['hi', 'en', 'en-IN'])
         except Exception:
             pass
-
         if not fetched:
             try:
                 fetched = api.fetch(video_id)
             except Exception:
                 pass
-
         if not fetched:
             try:
                 transcript_list = api.list(video_id)
@@ -137,7 +129,6 @@ def get_youtube_transcript(video_id):
                     break
             except Exception:
                 pass
-
         if not fetched:
             return "Error: Could not retrieve captions for this video."
 
@@ -146,9 +137,7 @@ def get_youtube_transcript(video_id):
             text = " ".join([item['text'] for item in raw_data if 'text' in item])
         else:
             text = " ".join([getattr(item, 'text', '') for item in fetched])
-
         return text
-
     except Exception as e:
         return f"Error extracting transcript: {e}"
 
@@ -164,34 +153,32 @@ def get_pdf_text(uploaded_file):
     except Exception as e:
         return f"Error reading PDF: {e}"
 
-def generate_quiz_batched(content, total_requested, api_key):
+def generate_quiz_batched(content, total_requested, api_keys):
     """
-    Handles large question requests (up to 1500) by splitting generation 
-    into automated background batches to avoid API response token truncation.
+    Handles large question requests with Auto API-Key Rotation.
+    If a quota/limit error is hit, it automatically switches to the next key.
     """
-    client = genai.Client(api_key=api_key)
-    batch_size = 20  # Safe size per prompt to ensure detailed JSON formatting
+    batch_size = 20
     total_batches = math.ceil(total_requested / batch_size)
     
     all_questions = []
     text_length = len(content)
     
-    # Progress indicator UI
     progress_bar = st.progress(0.0)
     status_text = st.empty()
+
+    current_key_idx = 0
+    client = genai.Client(api_key=api_keys[current_key_idx])
 
     for batch_idx in range(total_batches):
         current_batch_qty = min(batch_size, total_requested - len(all_questions))
         
-        # Calculate text window slice to cover full content proportionally
         start_char = int((batch_idx / total_batches) * text_length)
         end_char = int(((batch_idx + 1) / total_batches) * text_length)
-        
-        # Ensure slice has adequate context window size
         content_slice = content[start_char:min(end_char + 15000, text_length)]
         
-        status_text.text(f"⚡ Processing batch {batch_idx + 1} of {total_batches} ({len(all_questions)}/{total_requested} questions generated)...")
-        progress_bar.progress((batch_idx) / total_batches)
+        status_text.text(f"⚡ Processing batch {batch_idx + 1} of {total_batches} (Using API Key {current_key_idx + 1}/{len(api_keys)})...")
+        progress_bar.progress(batch_idx / total_batches)
 
         prompt = f"""
         You are an expert CLAT and AILET legal and current affairs examiner. 
@@ -217,18 +204,40 @@ def generate_quiz_batched(content, total_requested, api_key):
         {content_slice}
         """
 
-        try:
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config={'response_mime_type': 'application/json'}
-            )
-            batch_data = json.loads(response.text)
-            if isinstance(batch_data, list):
-                all_questions.extend(batch_data)
-        except Exception as e:
-            st.error(f"Error generating batch {batch_idx + 1}: {e}")
-            break
+        success = False
+        attempts = 0
+        
+        # API Rotation Retry Loop
+        while not success and attempts < len(api_keys):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config={'response_mime_type': 'application/json'}
+                )
+                batch_data = json.loads(response.text)
+                if isinstance(batch_data, list):
+                    all_questions.extend(batch_data)
+                success = True
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                # If error is related to rate limits or quota, switch keys
+                if any(kw in error_str for kw in ["429", "quota", "exhausted", "limit", "too many"]):
+                    attempts += 1
+                    if attempts < len(api_keys):
+                        current_key_idx = (current_key_idx + 1) % len(api_keys)
+                        status_text.text(f"⚠️ Quota reached. Auto-switching to API Key {current_key_idx + 1}...")
+                        client = genai.Client(api_key=api_keys[current_key_idx])
+                    else:
+                        st.error("❌ All provided API keys have exhausted their quotas.")
+                        break
+                else:
+                    st.error(f"Generation error on batch {batch_idx + 1}: {e}")
+                    break
+
+        if not success:
+            break # Halt overall generation if a batch completely fails across all keys
 
     progress_bar.progress(1.0)
     status_text.empty()
@@ -243,35 +252,34 @@ def generate_quiz_batched(content, total_requested, api_key):
 st.set_page_config(page_title="NotebookLM Flashcard Hub", page_icon="📘", layout="wide")
 apply_notebooklm_css()
 
-# Session State Setup
-if "quiz_data" not in st.session_state:
-    st.session_state.quiz_data = None
-if "current_idx" not in st.session_state:
-    st.session_state.current_idx = 0
-if "user_answers" not in st.session_state:
-    st.session_state.user_answers = {}
-if "is_finished" not in st.session_state:
-    st.session_state.is_finished = False
+# Session State Setup (Including Timer variables)
+if "quiz_data" not in st.session_state: st.session_state.quiz_data = None
+if "current_idx" not in st.session_state: st.session_state.current_idx = 0
+if "user_answers" not in st.session_state: st.session_state.user_answers = {}
+if "is_finished" not in st.session_state: st.session_state.is_finished = False
+if "start_time" not in st.session_state: st.session_state.start_time = None
+if "end_time" not in st.session_state: st.session_state.end_time = None
 
 st.title("📘 NotebookLM Interactive Quiz Hub")
 st.markdown("Transform long lectures & current affairs PDFs into structured flashcard decks.")
 
 # Sidebar Settings
 st.sidebar.header("⚙️ Configuration")
-api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Get free from Google AI Studio")
 
-# Question counter supporting up to 1,500 questions
+# Bulk API Input
+api_keys_input = st.sidebar.text_area(
+    "Gemini API Keys (One per line)", 
+    type="password", 
+    help="Paste multiple API keys here. The app will automatically switch keys if one hits a quota limit."
+)
+api_keys_list = [k.strip() for k in api_keys_input.split('\n') if k.strip()]
+
 num_questions = st.sidebar.number_input(
     "Number of Questions (1 - 1,500)", 
-    min_value=5, 
-    max_value=1500, 
-    value=20, 
-    step=5,
-    help="Large sets (>50) will be generated automatically in background batches."
+    min_value=5, max_value=1500, value=20, step=5
 )
 
 source_type = st.radio("Select source material:", ["YouTube Video", "PDF Document"])
-
 content_text = ""
 video_id = None
 
@@ -279,18 +287,15 @@ if source_type == "YouTube Video":
     yt_url = st.text_input("🔗 Paste YouTube Video URL:")
     if yt_url:
         video_id = extract_youtube_id(yt_url)
-        if not video_id:
-            st.error("Invalid YouTube URL.")
-        else:
-            st.image(f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg", width=360)
-
+        if not video_id: st.error("Invalid YouTube URL.")
+        else: st.image(f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg", width=360)
 elif source_type == "PDF Document":
     uploaded_file = st.file_uploader("📄 Upload Current Affairs PDF", type=["pdf"])
 
 # Execution Action
 if st.button("🚀 Generate Quiz Deck", type="primary", use_container_width=True):
-    if not api_key:
-        st.warning("⚠️ Please enter your Gemini API Key in the sidebar.")
+    if not api_keys_list:
+        st.warning("⚠️ Please enter at least one Gemini API Key in the sidebar.")
         st.stop()
 
     with st.spinner("Extracting material text..."):
@@ -307,12 +312,15 @@ if st.button("🚀 Generate Quiz Deck", type="primary", use_container_width=True
             st.stop()
 
         try:
-            quiz_results = generate_quiz_batched(content_text, num_questions, api_key)
+            quiz_results = generate_quiz_batched(content_text, num_questions, api_keys_list)
             if quiz_results:
                 st.session_state.quiz_data = quiz_results
                 st.session_state.current_idx = 0
                 st.session_state.user_answers = {}
                 st.session_state.is_finished = False
+                
+                # Start the background timer the moment generation is finished
+                st.session_state.start_time = time.time() 
                 st.rerun()
             else:
                 st.error("Failed to extract questions from content.")
@@ -336,12 +344,9 @@ if st.session_state.quiz_data:
 
         st.markdown("---")
         
-        # Header Progress Info
         col_title, col_prog = st.columns([3, 1])
-        with col_title:
-            st.caption(f"Flashcard {curr_i + 1} of {total_q}")
-        with col_prog:
-            st.progress((curr_i + 1) / total_q)
+        with col_title: st.caption(f"Flashcard {curr_i + 1} of {total_q}")
+        with col_prog: st.progress((curr_i + 1) / total_q)
 
         # Question Surface Card
         with st.container(border=True):
@@ -352,7 +357,6 @@ if st.session_state.quiz_data:
             options = q["options"]
             formatted_options = [f"{key}) {val}" for key, val in options.items()]
 
-            # Restore existing selection if returning to this card
             saved_choice_idx = None
             if curr_i in st.session_state.user_answers:
                 chosen_k = st.session_state.user_answers[curr_i]
@@ -375,27 +379,14 @@ if st.session_state.quiz_data:
                 correct_text = options[correct_key]
 
                 if chosen_key == correct_key:
-                    st.markdown(f"""
-                    <div class="correct-box">
-                        🎯 <strong>Correct!</strong> Option {correct_key}) {correct_text}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f'<div class="correct-box">🎯 <strong>Correct!</strong> Option {correct_key}) {correct_text}</div>', unsafe_allow_html=True)
                 else:
-                    st.markdown(f"""
-                    <div class="incorrect-box">
-                        ❌ <strong>Incorrect.</strong> Correct answer is <strong>{correct_key}) {correct_text}</strong>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f'<div class="incorrect-box">❌ <strong>Incorrect.</strong> Correct answer is <strong>{correct_key}) {correct_text}</strong></div>', unsafe_allow_html=True)
 
-                st.markdown(f"""
-                <div class="explanation-box">
-                    💡 <strong>Key Takeaway & Explanation:</strong><br>{q['explanation']}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f'<div class="explanation-box">💡 <strong>Key Takeaway & Explanation:</strong><br>{q["explanation"]}</div>', unsafe_allow_html=True)
 
         # Navigation Controls
         c_prev, c_center, c_next = st.columns([1, 2, 1])
-
         with c_prev:
             if curr_i > 0:
                 if st.button("⬅️ Previous Card", use_container_width=True):
@@ -410,6 +401,8 @@ if st.session_state.quiz_data:
             else:
                 if st.button("📊 Finish & View Dashboard", type="primary", use_container_width=True):
                     st.session_state.is_finished = True
+                    # Stop the timer exactly when they finish
+                    st.session_state.end_time = time.time()
                     st.rerun()
 
     # ------------------------------------------
@@ -420,30 +413,30 @@ if st.session_state.quiz_data:
         st.subheader("📊 Performance & Study Summary")
 
         # Score Calculations
-        correct_count = 0
-        for idx, q in enumerate(quiz_data):
-            if st.session_state.user_answers.get(idx) == q["correct_answer"]:
-                correct_count += 1
-
+        correct_count = sum(1 for idx, q in enumerate(quiz_data) if st.session_state.user_answers.get(idx) == q["correct_answer"])
         accuracy = (correct_count / total_q) * 100
 
-        # Metric Tiles
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("Total Score", f"{correct_count} / {total_q}")
-        with m2:
-            st.metric("Accuracy", f"{accuracy:.1f}%")
-        with m3:
+        # Timer Calculation
+        time_str = "N/A"
+        if st.session_state.start_time and st.session_state.end_time:
+            time_taken = st.session_state.end_time - st.session_state.start_time
+            mins, secs = divmod(int(time_taken), 60)
+            time_str = f"{mins}m {secs}s"
+
+        # Metric Tiles (Now split into 4 columns)
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.metric("Total Score", f"{correct_count} / {total_q}")
+        with m2: st.metric("Accuracy", f"{accuracy:.1f}%")
+        with m3: st.metric("Time Taken", time_str)
+        with m4: 
             status = "Target Achieved 🎉" if accuracy >= 70 else "Needs Revision 📚"
             st.metric("Readiness Level", status)
 
-        if accuracy >= 80:
-            st.balloons()
+        if accuracy >= 80: st.balloons()
 
         st.markdown("<br>", unsafe_allow_html=True)
         st.subheader("🔍 Complete Question Review Deck")
 
-        # Review All Questions
         for idx, q in enumerate(quiz_data):
             user_choice = st.session_state.user_answers.get(idx)
             correct_choice = q["correct_answer"]
@@ -461,11 +454,7 @@ if st.session_state.quiz_data:
                     st.markdown(f"❌ **Your Answer:** {user_str}")
                     st.markdown(f"🟢 **Correct Answer:** {correct_choice}) {options[correct_choice]}")
 
-                st.markdown(f"""
-                <div class="explanation-box">
-                    💡 <strong>Explanation:</strong> {q['explanation']}
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f'<div class="explanation-box">💡 <strong>Explanation:</strong> {q["explanation"]}</div>', unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🔄 Start New Session", type="primary", use_container_width=True):
@@ -473,4 +462,6 @@ if st.session_state.quiz_data:
             st.session_state.current_idx = 0
             st.session_state.user_answers = {}
             st.session_state.is_finished = False
+            st.session_state.start_time = None
+            st.session_state.end_time = None
             st.rerun()
