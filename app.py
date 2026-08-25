@@ -214,7 +214,7 @@ def generate_quiz_batched(content, total_requested, api_keys):
 # STREAMLIT USER INTERFACE
 # ==========================================
 
-st.set_page_config(page_title="NotebookLM Flashcard Hub", page_icon="📘", layout="wide")
+st.set_page_config(page_title="Prashant's TestBook", page_icon="📘", layout="wide")
 apply_notebooklm_css()
 
 if "quiz_data" not in st.session_state: st.session_state.quiz_data = None
@@ -224,7 +224,7 @@ if "is_finished" not in st.session_state: st.session_state.is_finished = False
 if "start_time" not in st.session_state: st.session_state.start_time = None
 if "end_time" not in st.session_state: st.session_state.end_time = None
 
-st.title("📘 NotebookLM Interactive Quiz Hub")
+st.title("📘 Prashant's TestBook")
 st.markdown("Transform long lectures & current affairs PDFs into structured flashcard decks.")
 
 st.sidebar.header("⚙️ Configuration")
